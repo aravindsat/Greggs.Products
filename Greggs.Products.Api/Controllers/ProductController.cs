@@ -2,6 +2,7 @@
 using System.Linq;
 using Greggs.Products.Api.DataAccess;
 using Greggs.Products.Api.Models;
+using Greggs.Products.Api.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -15,21 +16,27 @@ public class ProductController : ControllerBase
     private const int DefaultPageStart = 0;
     private const int DefaultPageSize = 5;
 
-    // Safety limit to prevent someone requesting a massive page size
+    // Safety limit to prevent requesting an excessively large page size
     private const int MaxPageSize = 100;
 
     private readonly ILogger<ProductController> _logger;
     private readonly IDataAccess<Product> _productAccess;
+    private readonly ICurrencyConverter _currencyConverter;
 
     /// <summary>
-    /// Initialises a new instance of the <see cref="ProductController"/> class.
+    /// Initializes a new instance of the <see cref="ProductController"/> class.
     /// </summary>
     /// <param name="logger">Diagnostics logger.</param>
     /// <param name="productAccess">Product data access.</param>
-    public ProductController(ILogger<ProductController> logger, IDataAccess<Product> productAccess)
+    /// <param name="currencyConverter">Currency conversion service.</param>
+    public ProductController(
+        ILogger<ProductController> logger,
+        IDataAccess<Product> productAccess,
+        ICurrencyConverter currencyConverter)
     {
         _logger = logger;
         _productAccess = productAccess;
+        _currencyConverter = currencyConverter;
     }
 
     /// <summary>
@@ -42,32 +49,79 @@ public class ProductController : ControllerBase
     [ProducesResponseType(typeof(object), StatusCodes.Status400BadRequest)]
     public ActionResult<IEnumerable<Product>> Get(int pageStart = DefaultPageStart, int pageSize = DefaultPageSize)
     {
-        // Log paging parameters used for the request
-        _logger.LogInformation("Products requested. pageStart={PageStart}, pageSize={PageSize}", pageStart, pageSize);
+        _logger.LogInformation("GBP products requested. pageStart={PageStart}, pageSize={PageSize}", pageStart, pageSize);
+
+        if (!TryValidateAndNormalizePaging(pageStart, pageSize, out var start, out var size, out var error))
+        {
+            _logger.LogWarning("Invalid paging. pageStart={PageStart}, pageSize={PageSize}, error={Error}", pageStart, pageSize, error);
+            return BadRequest(new { error });
+        }
+
+        var products = _productAccess.List(start, size).ToList();
+
+        _logger.LogInformation("GBP products returned. count={Count}, pageStart={PageStart}, pageSize={PageSize}",
+            products.Count, start, size);
+
+        return Ok(products);
+    }
+
+    /// <summary>
+    /// Returns latest menu priced in EUR (via currency conversion service).
+    /// </summary>
+    /// <param name="pageStart">Index to begin from.</param>
+    /// <param name="pageSize">Maximum number of products to return.</param>
+    [HttpGet("euros")]
+    [ProducesResponseType(typeof(IEnumerable<ProductInEuros>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(object), StatusCodes.Status400BadRequest)]
+    public ActionResult<IEnumerable<ProductInEuros>> GetInEuros(int pageStart = DefaultPageStart, int pageSize = DefaultPageSize)
+    {
+        _logger.LogInformation("EUR products requested. pageStart={PageStart}, pageSize={PageSize}", pageStart, pageSize);
+
+        if (!TryValidateAndNormalizePaging(pageStart, pageSize, out var start, out var size, out var error))
+        {
+            _logger.LogWarning("Invalid paging. pageStart={PageStart}, pageSize={PageSize}, error={Error}", pageStart, pageSize, error);
+            return BadRequest(new { error });
+        }
+
+        var productsInGbp = _productAccess.List(start, size).ToList();
+
+        var productsInEur = productsInGbp
+            .Select(p => new ProductInEuros
+            {
+                Name = p.Name,
+                PriceInEuros = _currencyConverter.ConvertGbpToEur(p.PriceInPounds)
+            })
+            .ToList();
+
+        _logger.LogInformation("EUR products returned. count={Count}, pageStart={PageStart}, pageSize={PageSize}",
+            productsInEur.Count, start, size);
+
+        return Ok(productsInEur);
+    }
+
+    private static bool TryValidateAndNormalizePaging( int pageStart, int pageSize, out int normalizedStart, out int normalizedSize, out string error)
+    {
+        normalizedStart = DefaultPageStart;
+        normalizedSize = DefaultPageSize;
+        error = string.Empty;
 
         // Validation
         if (pageStart < 0)
         {
-            _logger.LogWarning("Invalid pageStart received: {PageStart}", pageStart);
-            return BadRequest(new { error = "pageStart must be 0 or greater." });
+            error = "pageStart must be 0 or greater.";
+            return false;
         }
 
         if (pageSize <= 0)
         {
-            _logger.LogWarning("Invalid pageSize received: {PageSize}", pageSize);
-            return BadRequest(new { error = "pageSize must be greater than 0." });
+            error = "pageSize must be greater than 0.";
+            return false;
         }
 
-        // Normalize
-        if (pageSize > MaxPageSize)
-        {
-            _logger.LogWarning("pageSize too large ({PageSize}). Limiting to {MaxPageSize}.", pageSize, MaxPageSize);
-            pageSize = MaxPageSize;
-        }
-        // Retrieve and log products from the data access layer
-        var products = _productAccess.List(pageStart, pageSize).ToList();
-        _logger.LogInformation("Products returned. count={Count}, pageStart={PageStart}, pageSize={PageSize}", products.Count, pageStart, pageSize);
+        // Normalization
+        normalizedStart = pageStart;
+        normalizedSize = pageSize > MaxPageSize ? MaxPageSize : pageSize;
 
-        return Ok(products);
+        return true;
     }
 }

@@ -1,5 +1,6 @@
 using Greggs.Products.Api.DataAccess;
 using Greggs.Products.Api.Models;
+using Greggs.Products.Api.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,6 +18,8 @@ public class Startup
 
         // Registers ProductAccess as the data access implementation for Product entities
         services.AddScoped<IDataAccess<Product>, ProductAccess>();
+        // Registers FixedRateCurrencyConverter as the implementation for ICurrencyConverter.
+        services.AddSingleton<ICurrencyConverter, FixedRateCurrencyConverter>();
     }
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
