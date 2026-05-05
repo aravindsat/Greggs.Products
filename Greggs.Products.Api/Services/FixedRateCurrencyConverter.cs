@@ -1,15 +1,20 @@
-﻿using System;
+using System;
+using Greggs.Products.Api.Options;
+using Microsoft.Extensions.Options;
 
 namespace Greggs.Products.Api.Services;
 
 public class FixedRateCurrencyConverter : ICurrencyConverter
 {
-    // Given exchange rate of 1 GBP to 1.11 EUR
-    private const decimal GbpToEurRate = 1.11m;
+    private readonly decimal _gbpToEurRate;
+
+    public FixedRateCurrencyConverter(IOptions<CurrencyOptions> options)
+    {
+        _gbpToEurRate = options.Value.GbpToEurRate;
+    }
 
     public decimal ConvertGbpToEur(decimal pounds)
     {
-        // 2dp is typical for currency display
-        return decimal.Round(pounds * GbpToEurRate, 2, MidpointRounding.AwayFromZero);
+        return decimal.Round(pounds * _gbpToEurRate, 2, MidpointRounding.AwayFromZero);
     }
 }

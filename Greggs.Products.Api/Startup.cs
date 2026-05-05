@@ -1,25 +1,41 @@
-using Greggs.Products.Api.DataAccess;
-using Greggs.Products.Api.Models;
-using Greggs.Products.Api.Services;
+using System;
+using System.IO;
+using System.Reflection;
+using Greggs.Products.Api.Extensions;
+using Greggs.Products.Api.Middleware;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.OpenApi.Models;
 
 namespace Greggs.Products.Api;
 
 public class Startup
 {
+    private readonly IConfiguration _configuration;
+
+    public Startup(IConfiguration configuration)
+    {
+        _configuration = configuration;
+    }
+
     public void ConfigureServices(IServiceCollection services)
     {
         services.AddControllers();
 
-        services.AddSwaggerGen();
+        services.AddSwaggerGen(c =>
+        {
+            c.SwaggerDoc("v1", new OpenApiInfo { Title = "Greggs Products API", Version = "v1" });
+            var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+            var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+            c.IncludeXmlComments(xmlPath);
+        });
 
-        // Registers ProductAccess as the data access implementation for Product entities
-        services.AddScoped<IDataAccess<Product>, ProductAccess>();
-        // Registers FixedRateCurrencyConverter as the implementation for ICurrencyConverter.
-        services.AddSingleton<ICurrencyConverter, FixedRateCurrencyConverter>();
+        services.AddDataAccess();
+        services.AddProductServices();
+        services.AddCurrencyServices(_configuration);
     }
 
     public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
@@ -29,8 +45,10 @@ public class Startup
             app.UseDeveloperExceptionPage();
         }
 
+        app.UseMiddleware<ExceptionHandlingMiddleware>();
+
         app.UseSwagger();
-        app.UseSwaggerUI(c => { c.SwaggerEndpoint("/swagger/v1/swagger.json", "Greggs Products API V1"); });
+        app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "Greggs Products API v1"));
 
         app.UseHttpsRedirection();
 
@@ -38,6 +56,6 @@ public class Startup
 
         app.UseAuthorization();
 
-        app.UseEndpoints(endpoints => { endpoints.MapControllers(); });
+        app.UseEndpoints(endpoints => endpoints.MapControllers());
     }
 }

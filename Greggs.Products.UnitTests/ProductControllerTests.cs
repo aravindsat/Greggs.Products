@@ -1,153 +1,112 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Greggs.Products.Api.Contracts;
 using Greggs.Products.Api.Controllers;
-using Greggs.Products.Api.DataAccess;
-using Greggs.Products.Api.Models;
 using Greggs.Products.Api.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
-using System.Collections.Generic;
-using System.Linq;
 using Xunit;
 
-namespace Greggs.Products.UnitTests
-{
-    public class ProductControllerTests
-    {
-        [Fact]
-        public void Get_ReturnsOk_WithProducts_FromDataAccess()
-        {
-            // Arrange
-            var logger = Mock.Of<ILogger<ProductController>>();
+namespace Greggs.Products.UnitTests;
 
-            var productsFromDal = new List<Product>
+public class ProductControllerTests
+{
+    private readonly Mock<IProductService> _serviceMock;
+    private readonly ProductController _controller;
+
+    public ProductControllerTests()
+    {
+        _serviceMock = new Mock<IProductService>();
+        _controller = new ProductController(Mock.Of<ILogger<ProductController>>(), _serviceMock.Object);
+    }
+
+    [Fact]
+    public async Task Get_ReturnsOk_WithProductsFromService()
+    {
+        var products = new List<ProductResponse>
         {
             new() { Name = "Sausage Roll", PriceInPounds = 1.00m },
             new() { Name = "Steak Bake", PriceInPounds = 1.20m }
         };
+        _serviceMock.Setup(s => s.GetProductsAsync(0, 5, default)).ReturnsAsync(products);
 
-            var dataAccessMock = new Mock<IDataAccess<Product>>();
-            dataAccessMock
-                .Setup(d => d.List(0, 5))
-                .Returns(productsFromDal);
+        var result = await _controller.Get(pageStart: 0, pageSize: 5);
 
-            var converterMock = new Mock<ICurrencyConverter>();
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var returned = Assert.IsAssignableFrom<IEnumerable<ProductResponse>>(ok.Value);
+        Assert.Equal(2, returned.Count());
+        Assert.Equal("Sausage Roll", returned.First().Name);
+        _serviceMock.Verify(s => s.GetProductsAsync(0, 5, default), Times.Once);
+    }
 
-            var controller = new ProductController(logger, dataAccessMock.Object, converterMock.Object);
+    [Fact]
+    public async Task Get_EmptyProductList_ReturnsOkWithEmptyCollection()
+    {
+        _serviceMock.Setup(s => s.GetProductsAsync(0, 5, default)).ReturnsAsync(Enumerable.Empty<ProductResponse>());
 
-            // Act
-            var result = controller.Get(pageStart: 0, pageSize: 5);
+        var result = await _controller.Get(pageStart: 0, pageSize: 5);
 
-            // Assert
-            var ok = Assert.IsType<OkObjectResult>(result.Result);
-            var returned = Assert.IsAssignableFrom<IEnumerable<Product>>(ok.Value);
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var returned = Assert.IsAssignableFrom<IEnumerable<ProductResponse>>(ok.Value);
+        Assert.Empty(returned);
+    }
 
-            Assert.Equal(2, returned.Count());
-            Assert.Equal("Sausage Roll", returned.First().Name);
+    [Theory]
+    [InlineData(-1, 5, "pageStart must be 0 or greater.")]
+    [InlineData(0, 0, "pageSize must be greater than 0.")]
+    [InlineData(0, -1, "pageSize must be greater than 0.")]
+    public async Task Get_InvalidPaging_ReturnsBadRequestWithProblemDetails(int pageStart, int pageSize, string expectedError)
+    {
+        var result = await _controller.Get(pageStart, pageSize);
 
-            dataAccessMock.Verify(d => d.List(0, 5), Times.Once);
-        }
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(expectedError, problem.Title);
+        _serviceMock.Verify(s => s.GetProductsAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 
-        [Theory]
-        [InlineData(-1, 5, "pageStart must be 0 or greater.")]
-        [InlineData(0, 0, "pageSize must be greater than 0.")]
-        [InlineData(0, -1, "pageSize must be greater than 0.")]
-        public void Get_InvalidPaging_ReturnsBadRequest(int pageStart, int pageSize, string expectedError)
+    [Fact]
+    public async Task Get_PageSizeAboveMax_IsLimitedTo100()
+    {
+        _serviceMock.Setup(s => s.GetProductsAsync(0, 100, default)).ReturnsAsync(new List<ProductResponse>());
+
+        await _controller.Get(pageStart: 0, pageSize: 9999);
+
+        _serviceMock.Verify(s => s.GetProductsAsync(0, 100, default), Times.Once);
+    }
+
+    [Fact]
+    public async Task GetInEuros_ReturnsOk_WithEuroPricedProductsFromService()
+    {
+        var products = new List<ProductEurosResponse>
         {
-            // Arrange
-            var logger = Mock.Of<ILogger<ProductController>>();
-            var dataAccessMock = new Mock<IDataAccess<Product>>();
-            var converterMock = new Mock<ICurrencyConverter>();
-
-            var controller = new ProductController(logger, dataAccessMock.Object, converterMock.Object);
-
-            // Act
-            var result = controller.Get(pageStart, pageSize);
-
-            // Assert
-            var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
-
-            // The controller returns: new { error = "..." }
-            // We can verify by reading the anonymous object's "error" property via reflection.
-            var errorProp = badRequest.Value!.GetType().GetProperty("error");
-            Assert.NotNull(errorProp);
-
-            var errorValue = errorProp!.GetValue(badRequest.Value) as string;
-            Assert.Equal(expectedError, errorValue);
-
-            dataAccessMock.Verify(d => d.List(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
-        }
-
-        [Fact]
-        public void GetInEuros_ReturnsOk_WithConvertedPrices()
-        {
-            // Arrange
-            var logger = Mock.Of<ILogger<ProductController>>();
-
-            var productsFromDal = new List<Product>
-        {
-            new() { Name = "Sausage Roll", PriceInPounds = 1.00m },
-            new() { Name = "Yum Yum", PriceInPounds = 0.70m }
+            new() { Name = "Sausage Roll", PriceInEuros = 1.11m },
+            new() { Name = "Yum Yum", PriceInEuros = 0.78m }
         };
+        _serviceMock.Setup(s => s.GetProductsInEurosAsync(0, 5, default)).ReturnsAsync(products);
 
-            var dataAccessMock = new Mock<IDataAccess<Product>>();
-            dataAccessMock
-                .Setup(d => d.List(0, 5))
-                .Returns(productsFromDal);
+        var result = await _controller.GetInEuros(pageStart: 0, pageSize: 5);
 
-            var converterMock = new Mock<ICurrencyConverter>();
-            converterMock.Setup(c => c.ConvertGbpToEur(1.00m)).Returns(1.11m);
-            converterMock.Setup(c => c.ConvertGbpToEur(0.70m)).Returns(0.78m);
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var returned = Assert.IsAssignableFrom<IEnumerable<ProductEurosResponse>>(ok.Value).ToList();
+        Assert.Equal(2, returned.Count);
+        Assert.Equal(1.11m, returned[0].PriceInEuros);
+        Assert.Equal(0.78m, returned[1].PriceInEuros);
+    }
 
-            var controller = new ProductController(logger, dataAccessMock.Object, converterMock.Object);
+    [Theory]
+    [InlineData(-1, 5, "pageStart must be 0 or greater.")]
+    [InlineData(0, 0, "pageSize must be greater than 0.")]
+    public async Task GetInEuros_InvalidPaging_ReturnsBadRequestWithProblemDetails(int pageStart, int pageSize, string expectedError)
+    {
+        var result = await _controller.GetInEuros(pageStart, pageSize);
 
-            // Act
-            var result = controller.GetInEuros(pageStart: 0, pageSize: 5);
-
-            // Assert
-            var ok = Assert.IsType<OkObjectResult>(result.Result);
-            var returned = Assert.IsAssignableFrom<IEnumerable<ProductInEuros>>(ok.Value);
-
-            var list = returned.ToList();
-            Assert.Equal(2, list.Count);
-
-            Assert.Equal("Sausage Roll", list[0].Name);
-            Assert.Equal(1.11m, list[0].PriceInEuros);
-
-            Assert.Equal("Yum Yum", list[1].Name);
-            Assert.Equal(0.78m, list[1].PriceInEuros);
-
-            dataAccessMock.Verify(d => d.List(0, 5), Times.Once);
-            converterMock.Verify(c => c.ConvertGbpToEur(1.00m), Times.Once);
-            converterMock.Verify(c => c.ConvertGbpToEur(0.70m), Times.Once);
-        }
-
-        [Fact]
-        public void Get_PageSizeAboveMax_IsLimitedToMax()
-        {
-            // Arrange
-            var logger = Mock.Of<ILogger<ProductController>>();
-
-            var productsFromDal = new List<Product>
-        {
-            new() { Name = "Sausage Roll", PriceInPounds = 1.00m }
-        };
-
-            var dataAccessMock = new Mock<IDataAccess<Product>>();
-            dataAccessMock
-                .Setup(d => d.List(0, 100)) // MaxPageSize in controller = 100
-                .Returns(productsFromDal);
-
-            var converterMock = new Mock<ICurrencyConverter>();
-
-            var controller = new ProductController(logger, dataAccessMock.Object, converterMock.Object);
-
-            // Act
-            var result = controller.Get(pageStart: 0, pageSize: 9999);
-
-            // Assert
-            var ok = Assert.IsType<OkObjectResult>(result.Result);
-
-            dataAccessMock.Verify(d => d.List(0, 100), Times.Once);
-        }
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(expectedError, problem.Title);
+        _serviceMock.Verify(s => s.GetProductsInEurosAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }
